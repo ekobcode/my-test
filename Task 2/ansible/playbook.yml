@@ -1,0 +1,6 @@
+---
+- name: Setup NGINX on VM
+  hosts: web
+  become: true
+  roles:
+    - nginx

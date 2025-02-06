@@ -1,0 +1,38 @@
+---
+- name: Install NGINX (Debian/Ubuntu)
+  apt:
+    name: nginx
+    state: present
+  when: ansible_os_family == "Debian"
+
+- name: Install NGINX (RHEL/CentOS)
+  yum:
+    name: nginx
+    state: present
+  when: ansible_os_family == "RedHat"
+
+- name: Copy NGINX config
+  template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+  notify: Restart NGINX
+
+- name: Enable and Start NGINX
+  service:
+    name: nginx
+    enabled: yes
+    state: started
+
+- name: Open HTTP Port (80)
+  ufw:
+    rule: allow
+    port: 80
+    proto: tcp
+  when: ansible_os_family == "Debian"
+
+- name: Open HTTP Port (80) - FirewallD
+  firewalld:
+    service: http
+    permanent: true
+    state: enabled
+  when: ansible_os_family == "RedHat"

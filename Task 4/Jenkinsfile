@@ -1,0 +1,115 @@
+pipeline {
+    agent any
+
+    environment {
+        REGISTRY = "docker.io"
+        IMAGE_NAME = "myapp"
+        IMAGE_TAG = "latest"
+        DOCKER_CREDENTIALS = "dockerhub-credentials"
+        KUBE_CONFIG_CREDENTIALS = "kubeconfig"
+        HELM_RELEASE_NAME = "myapp"
+        HELM_NAMESPACE = "production"
+        CONTAINER_NAME = "myapp-container"
+    }
+
+    stages {
+        stage('Fetch Code') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Unit Test') {
+            steps {
+                script {
+                    try {
+                        sh 'go test ./...'
+                    } catch (Exception e) {
+                        error "Unit tests failed!"
+                    }
+                }
+            }
+        }
+
+        stage('Build & Push Docker') {
+            steps {
+                script {
+                    withDockerRegistry([credentialsId: "${DOCKER_CREDENTIALS}", url: "https://${REGISTRY}"]) {
+                        sh """
+                        docker build -t ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} .
+                        docker push ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Run Container for OWASP Scan') {
+            steps {
+                script {
+                    try {
+                        sh """
+                        docker run -d --rm -p 8080:80 --name ${CONTAINER_NAME} ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+                        sleep 10  # Tunggu beberapa detik agar container siap
+                        """
+                    } catch (Exception e) {
+                        error "Failed to start the container for OWASP ZAP scan!"
+                    }
+                }
+            }
+        }
+
+        stage('OWASP ZAP Scan') {
+            steps {
+                script {
+                    try {
+                        sh 'docker run --rm owasp/zap2docker-stable zap-baseline.py -t http://localhost:8080 -r zap_report.html'
+                    } catch (Exception e) {
+                        error "OWASP ZAP scan failed!"
+                    }
+                }
+            }
+        }
+
+        stage('Security Container Scan') {
+            steps {
+                script {
+                    try {
+                        sh 'trivy image ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}'
+                    } catch (Exception e) {
+                        error "Container security scan failed!"
+                    }
+                }
+            }
+        }
+
+        stage('Deploy with Helm') {
+            steps {
+                script {
+                    withKubeConfig([credentialsId: "${KUBE_CONFIG_CREDENTIALS}"]) {
+                        sh """
+                        helm upgrade --install ${HELM_RELEASE_NAME} ./helm \
+                            --namespace ${HELM_NAMESPACE} \
+                            --set image.repository=${REGISTRY}/${IMAGE_NAME} \
+                            --set image.tag=${IMAGE_TAG}
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                sh 'docker stop ${CONTAINER_NAME} || true'  
+            }
+        }
+        success {
+            echo '✅ Deployment SUCCESS!'
+        }
+        failure {
+            echo '❌ Deployment FAILED!'
+        }
+    }
+}
